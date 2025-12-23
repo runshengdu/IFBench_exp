@@ -1171,8 +1171,12 @@ class LastWordFirstNextChecker(Instruction):
 		"""Checks if the last word of each sentence in the response is the first word of the next sentence."""
 		sentences = instructions_util.split_into_sentences(value)
 		for i in range(len(sentences) - 1):
-			last_word = sentences[i].rstrip(''.join(string.punctuation) + ' ').split()[-1]
-			first_word = sentences[i + 1].lstrip(''.join(string.punctuation) + ' ').split()[0]
+			prev_words = sentences[i].rstrip(''.join(string.punctuation) + ' ').split()
+			next_words = sentences[i + 1].lstrip(''.join(string.punctuation) + ' ').split()
+			if not prev_words or not next_words:
+				return False
+			last_word = prev_words[-1]
+			first_word = next_words[0]
 			if last_word.lower() != first_word.lower():
 				return False
 		return True

@@ -17,9 +17,9 @@ from openai import OpenAI
 from tqdm import tqdm
 
 
-_HARDCODED_MODEL_ID = "MiniMax-M2-Stable"
+_HARDCODED_MODEL_ID = "kimi-k2-thinking"
 
-_GENERATION_MAX_WORKERS = 30
+_GENERATION_MAX_WORKERS = 70
 _GENERATION_MAX_RETRIES = 3
 
 _MODELS_YAML = flags.DEFINE_string(
