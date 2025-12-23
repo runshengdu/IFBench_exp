@@ -40,6 +40,10 @@ class OutputExample:
   follow_instruction_list: list[bool]
 
 
+def output_example_to_dict(o: OutputExample) -> dict:
+  return dataclasses.asdict(o)
+
+
 def read_prompt_list(input_jsonl_filename):
   """Read inputs from jsonl."""
   inputs = []
@@ -61,15 +65,73 @@ def write_outputs(output_jsonl_filename, outputs):
     for o in outputs:
       f.write(
           json.dumps(
-              {
-                  attr_name: o.__getattribute__(attr_name)
-                  for attr_name in [
-                      name for name in dir(o) if not name.startswith("_")
-                  ]
-              }
+              output_example_to_dict(o)
           )
       )
       f.write("\n")
+
+
+def write_outputs_with_prefix(output_jsonl_filename, outputs, prefix_record: dict):
+  assert outputs
+  with open(output_jsonl_filename, "w", encoding="utf-8") as f:
+    f.write(json.dumps(prefix_record, ensure_ascii=False))
+    f.write("\n")
+    for o in outputs:
+      f.write(json.dumps(output_example_to_dict(o), ensure_ascii=False))
+      f.write("\n")
+
+
+def compute_report(outputs):
+  prompt_total = 0
+  prompt_correct = 0
+  instruction_total = 0
+  instruction_correct = 0
+
+  tier0_total = collections.defaultdict(int)
+  tier0_correct = collections.defaultdict(int)
+
+  tier1_total = collections.defaultdict(int)
+  tier1_correct = collections.defaultdict(int)
+
+  for example in outputs:
+    follow_instruction_list = example.follow_instruction_list
+    instruction_id_list = example.instruction_id_list
+
+    prompt_total += 1
+    if all(follow_instruction_list):
+      prompt_correct += 1
+
+    instruction_total += len(instruction_id_list)
+    instruction_correct += sum(follow_instruction_list)
+
+    for instruction_id, followed_or_not in zip(
+        instruction_id_list, follow_instruction_list
+    ):
+      instruction_id = instruction_id.split(":")[0]
+      tier0_total[instruction_id] += 1
+      if followed_or_not:
+        tier0_correct[instruction_id] += 1
+
+    for instruction_id, followed_or_not in zip(
+        instruction_id_list, follow_instruction_list
+    ):
+      tier1_total[instruction_id] += 1
+      if followed_or_not:
+        tier1_correct[instruction_id] += 1
+
+  tier0_accuracy = {
+      k: (tier0_correct[k] / tier0_total[k]) for k in sorted(tier0_total.keys())
+  }
+  tier1_accuracy = {
+      k: (tier1_correct[k] / tier1_total[k]) for k in sorted(tier1_total.keys())
+  }
+
+  return {
+      "prompt_level": prompt_correct / prompt_total,
+      "instruction_level": instruction_correct / instruction_total,
+      "tier0": tier0_accuracy,
+      "tier1": tier1_accuracy,
+  }
 
 
 def test_instruction_following_strict(
@@ -170,50 +232,12 @@ def read_prompt_to_response_dict(input_jsonl_filename):
 def print_report(outputs):
   """Prints a report on accuracy scores."""
 
-  prompt_total = 0
-  prompt_correct = 0
-  instruction_total = 0
-  instruction_correct = 0
-
-  tier0_total = collections.defaultdict(int)
-  tier0_correct = collections.defaultdict(int)
-
-  tier1_total = collections.defaultdict(int)
-  tier1_correct = collections.defaultdict(int)
-
-  for example in outputs:
-    follow_instruction_list = example.follow_instruction_list
-    instruction_id_list = example.instruction_id_list
-
-    prompt_total += 1
-    if all(follow_instruction_list):
-      prompt_correct += 1
-
-    instruction_total += len(instruction_id_list)
-    instruction_correct += sum(follow_instruction_list)
-
-    for instruction_id, followed_or_not in zip(
-        instruction_id_list, follow_instruction_list
-    ):
-      instruction_id = instruction_id.split(":")[0]
-      tier0_total[instruction_id] += 1
-      if followed_or_not:
-        tier0_correct[instruction_id] += 1
-
-    for instruction_id, followed_or_not in zip(
-        instruction_id_list, follow_instruction_list
-    ):
-      tier1_total[instruction_id] += 1
-      if followed_or_not:
-        tier1_correct[instruction_id] += 1
-
-  print(f"prompt-level: {prompt_correct / prompt_total}")
-  print(f"instruction-level: {instruction_correct / instruction_total}")
+  report = compute_report(outputs)
+  print(f"prompt-level: {report['prompt_level']}")
+  print(f"instruction-level: {report['instruction_level']}")
   print()
-  for instruction_id in sorted(tier0_total.keys()):
-    accuracy = tier0_correct[instruction_id] / tier0_total[instruction_id]
+  for instruction_id, accuracy in report["tier0"].items():
     print(f"{instruction_id} {accuracy}")
   print()
-  for instruction_id in sorted(tier1_total.keys()):
-    accuracy = tier1_correct[instruction_id] / tier1_total[instruction_id]
+  for instruction_id, accuracy in report["tier1"].items():
     print(f"{instruction_id} {accuracy}")

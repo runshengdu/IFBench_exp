@@ -6,3 +6,8 @@ spacy
 emoji
 syllapy
 unicodedata2
+openai
+pyyaml
+pandas
+pyarrow
+tqdm
