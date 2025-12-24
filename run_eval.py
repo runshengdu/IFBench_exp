@@ -17,9 +17,9 @@ from openai import OpenAI
 from tqdm import tqdm
 
 
-_HARDCODED_MODEL_ID = "google/gemini-3-flash-preview"
+_HARDCODED_MODEL_ID = "glm-4.7"
 
-_GENERATION_MAX_WORKERS = 30
+_GENERATION_MAX_WORKERS = 1
 _GENERATION_MAX_RETRIES = 3
 
 _MODELS_YAML = flags.DEFINE_string(
@@ -340,7 +340,8 @@ def _run_generation() -> None:
 
   def _is_sensitive_content_error(e: Exception) -> bool:
     text = str(e)
-    if "敏感" in text or "contentFilter" in text:
+    text_lower = text.lower()
+    if "敏感" in text or "contentfilter" in text_lower or "new_sensitive" in text_lower:
       return True
     body = getattr(e, "body", None)
     if isinstance(body, dict):
@@ -348,15 +349,16 @@ def _run_generation() -> None:
         body_text = json.dumps(body, ensure_ascii=False)
       except Exception:
         body_text = str(body)
-      if "敏感" in body_text or "contentFilter" in body_text:
+      body_text_lower = body_text.lower()
+      if "敏感" in body_text or "contentfilter" in body_text_lower or "new_sensitive" in body_text_lower:
         return True
       err_obj = body.get("error")
       if isinstance(err_obj, dict):
         msg = err_obj.get("message")
-        if isinstance(msg, str) and "敏感" in msg:
+        if isinstance(msg, str) and ("敏感" in msg or "new_sensitive" in msg.lower()):
           return True
       return False
-    if isinstance(body, str) and "敏感" in body:
+    if isinstance(body, str) and ("敏感" in body or "new_sensitive" in body.lower()):
       return True
     return False
 
