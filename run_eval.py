@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 _HARDCODED_MODEL_ID = "glm-4.7"
 
-_GENERATION_MAX_WORKERS = 1
+_GENERATION_MAX_WORKERS = 5
 _GENERATION_MAX_RETRIES = 3
 
 _MODELS_YAML = flags.DEFINE_string(
@@ -312,13 +312,11 @@ def _run_generation() -> None:
             content = ""
         return {"key": key, "response": content}
       except Exception as e:
-        if _is_sensitive_content_error(e):
-          raise
         last_exc = e
         if attempt < _GENERATION_MAX_RETRIES - 1:
           sleep_s = min(8.0, float(2 ** attempt))
           logging.warning(
-              "Non-sensitive generation error for key=%s (attempt %d/%d): %s; retrying in %.1fs",
+              "Generation error for key=%s (attempt %d/%d): %s; retrying in %.1fs",
               key,
               attempt + 1,
               _GENERATION_MAX_RETRIES,
@@ -328,7 +326,7 @@ def _run_generation() -> None:
           time.sleep(sleep_s)
         else:
           logging.warning(
-              "Non-sensitive generation error for key=%s (attempt %d/%d): %s; giving up",
+              "Generation error for key=%s (attempt %d/%d): %s; giving up",
               key,
               attempt + 1,
               _GENERATION_MAX_RETRIES,
@@ -338,35 +336,11 @@ def _run_generation() -> None:
     assert last_exc is not None
     raise last_exc
 
-  def _is_sensitive_content_error(e: Exception) -> bool:
-    text = str(e)
-    text_lower = text.lower()
-    if "敏感" in text or "contentfilter" in text_lower or "new_sensitive" in text_lower:
-      return True
-    body = getattr(e, "body", None)
-    if isinstance(body, dict):
-      try:
-        body_text = json.dumps(body, ensure_ascii=False)
-      except Exception:
-        body_text = str(body)
-      body_text_lower = body_text.lower()
-      if "敏感" in body_text or "contentfilter" in body_text_lower or "new_sensitive" in body_text_lower:
-        return True
-      err_obj = body.get("error")
-      if isinstance(err_obj, dict):
-        msg = err_obj.get("message")
-        if isinstance(msg, str) and ("敏感" in msg or "new_sensitive" in msg.lower()):
-          return True
-      return False
-    if isinstance(body, str) and ("敏感" in body or "new_sensitive" in body.lower()):
-      return True
-    return False
-
-  def _prompt_skip_sensitive_task(key: int, e: Exception) -> bool:
+  def _prompt_skip_task(key: int, e: Exception) -> bool:
     if hasattr(sys.stdin, "isatty") and not sys.stdin.isatty():
       return False
     print("\n" + "=" * 80)
-    print(f"Task key={key} failed: possible sensitive content in request/response.")
+    print(f"Task key={key} failed.")
     print(f"Error: {e}")
     while True:
       ans = input("Skip this task and continue? [y/N]: ").strip().lower()
@@ -406,10 +380,9 @@ def _run_generation() -> None:
             record = fut.result()
           except Exception as e:
             key = future_to_key.get(fut)
-            if key is not None and _is_sensitive_content_error(e):
-              if _prompt_skip_sensitive_task(key, e):
-                pbar.update(1)
-                continue
+            if key is not None and _prompt_skip_task(key, e):
+              pbar.update(1)
+              continue
             for other in futures:
               other.cancel()
             logging.exception("Generation failed")
