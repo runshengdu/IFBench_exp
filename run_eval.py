@@ -17,10 +17,11 @@ from openai import OpenAI
 from tqdm import tqdm
 
 
-_HARDCODED_MODEL_ID = "glm-4.7"
+_HARDCODED_MODEL_ID = "MiniMax-M2"
 
-_GENERATION_MAX_WORKERS = 5
+_GENERATION_MAX_WORKERS = 50
 _GENERATION_MAX_RETRIES = 3
+_GENERATION_SLEEP_S = 0
 
 _MODELS_YAML = flags.DEFINE_string(
     "models_yaml", "models.yaml", "Path to models.yaml.", required=False
@@ -301,52 +302,30 @@ def _run_generation() -> None:
     client = _get_client()
     create_kwargs = _make_create_kwargs(messages)
 
-    last_exc: Optional[Exception] = None
-    for attempt in range(_GENERATION_MAX_RETRIES):
-      try:
-        content = _stream_chat_completion_text(client, create_kwargs)
-        if content == "":
-          resp = client.chat.completions.create(**create_kwargs)
-          content = resp.choices[0].message.content
-          if content is None:
-            content = ""
-        return {"key": key, "response": content}
-      except Exception as e:
-        last_exc = e
-        if attempt < _GENERATION_MAX_RETRIES - 1:
-          sleep_s = min(8.0, float(2 ** attempt))
-          logging.warning(
-              "Generation error for key=%s (attempt %d/%d): %s; retrying in %.1fs",
-              key,
-              attempt + 1,
-              _GENERATION_MAX_RETRIES,
-              e,
-              sleep_s,
-          )
-          time.sleep(sleep_s)
-        else:
-          logging.warning(
-              "Generation error for key=%s (attempt %d/%d): %s; giving up",
-              key,
-              attempt + 1,
-              _GENERATION_MAX_RETRIES,
-              e,
-          )
+    try:
+      if _GENERATION_SLEEP_S > 0:
+        time.sleep(_GENERATION_SLEEP_S)
+      content = _stream_chat_completion_text(client, create_kwargs)
+      if content == "":
+        resp = client.chat.completions.create(**create_kwargs)
+        content = resp.choices[0].message.content
+        if content is None:
+          content = ""
+      return {"key": key, "response": content}
+    except Exception as e:
+      logging.warning("Generation error for key=%s: %s", key, e)
+      raise
 
-    assert last_exc is not None
-    raise last_exc
-
-  def _prompt_skip_task(key: int, e: Exception) -> bool:
-    if hasattr(sys.stdin, "isatty") and not sys.stdin.isatty():
-      return False
+  def _prompt_skip_task(key: Optional[int], e: Exception) -> bool:
     print("\n" + "=" * 80)
-    print(f"Task key={key} failed.")
+    key_text = key if key is not None else "<unknown>"
+    print(f"Task key={key_text} failed.")
     print(f"Error: {e}")
     while True:
-      ans = input("Skip this task and continue? [y/N]: ").strip().lower()
-      if ans in ("y", "yes"):
+      ans = input("Skip this task and continue? [y/n]: ").strip().lower()
+      if ans in ("y"):
         return True
-      if ans in ("", "n", "no"):
+      if ans in ("n"):
         return False
 
   pending: List[tuple[int, List[Dict[str, Any]]]] = []
@@ -380,7 +359,7 @@ def _run_generation() -> None:
             record = fut.result()
           except Exception as e:
             key = future_to_key.get(fut)
-            if key is not None and _prompt_skip_task(key, e):
+            if _prompt_skip_task(key, e):
               pbar.update(1)
               continue
             for other in futures:
