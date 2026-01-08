@@ -17,9 +17,9 @@ from openai import OpenAI
 from tqdm import tqdm
 
 
-_HARDCODED_MODEL_ID = "MiniMax-M2"
+_HARDCODED_MODEL_ID = "doubao-seed-1-8-251228"
 
-_GENERATION_MAX_WORKERS = 50
+_GENERATION_MAX_WORKERS = 100
 _GENERATION_MAX_RETRIES = 3
 _GENERATION_SLEEP_S = 0
 
