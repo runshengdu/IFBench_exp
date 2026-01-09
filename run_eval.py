@@ -28,47 +28,39 @@ _MODELS_YAML = flags.DEFINE_string(
 )
 
 _INPUT_PARQUET = flags.DEFINE_string(
-    "input_parquet",
+    "--input-parquet",
     os.path.join("data", "test-00000-of-00001.parquet"),
     "Path to IFBench parquet containing the chat messages.",
     required=False,
 )
 
 _NUM_TASKS = flags.DEFINE_integer(
-    "num_tasks",
+    "--num-tasks",
     None,
-    "If provided, only run the first k tasks from --input_parquet (generation only).",
+    "If provided, only run the first k tasks from --input-parquet (generation only).",
     required=False,
 )
 
 _OUTPUT_FILE = flags.DEFINE_string(
-    "output_file",
+    "--save-to",
     None,
     "JSONL file to write generation outputs. If not provided, defaults to ./output/<model>.jsonl",
     required=False,
 )
 
 _INPUT_DATA = flags.DEFINE_string(
-    "input_data",
+    "--evaluation-file",
     None,
     "Path to model generation JSONL (must contain prompt/response; used for evaluation).",
     required=False,
 )
 
 _OUTPUT_DIR = flags.DEFINE_string(
-    "output_dir",
+    "--output-dir",
     "eval",
     "Output directory for evaluation results.",
     required=False,
 )
-
-
-if hasattr(flags, "DEFINE_alias"):
-  flags.DEFINE_alias("output-file", "output_file")
-  flags.DEFINE_alias("input-data", "input_data")
-  flags.DEFINE_alias("models-yaml", "models_yaml")
-  flags.DEFINE_alias("input-parquet", "input_parquet")
-  flags.DEFINE_alias("num-tasks", "num_tasks")
 
 
 def _resolve_env_vars(value: Any) -> Any:
