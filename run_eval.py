@@ -4,7 +4,7 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from datetime import datetime
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from absl import app
@@ -17,9 +17,9 @@ from openai import OpenAI
 from tqdm import tqdm
 
 
-_HARDCODED_MODEL_ID = "doubao-seed-1-8-251228"
+_HARDCODED_MODEL_ID = "deepseek-reasoner"
 
-_GENERATION_MAX_WORKERS = 100
+_GENERATION_MAX_WORKERS = 50
 _GENERATION_MAX_RETRIES = 3
 _GENERATION_SLEEP_S = 0
 
@@ -28,37 +28,37 @@ _MODELS_YAML = flags.DEFINE_string(
 )
 
 _INPUT_PARQUET = flags.DEFINE_string(
-    "--input-parquet",
+    "input-parquet",
     os.path.join("data", "test-00000-of-00001.parquet"),
     "Path to IFBench parquet containing the chat messages.",
     required=False,
 )
 
 _NUM_TASKS = flags.DEFINE_integer(
-    "--num-tasks",
+    "num-tasks",
     None,
     "If provided, only run the first k tasks from --input-parquet (generation only).",
     required=False,
 )
 
 _OUTPUT_FILE = flags.DEFINE_string(
-    "--save-to",
+    "save-to",
     None,
-    "JSONL file to write generation outputs. If not provided, defaults to ./output/<model>.jsonl",
+    "JSONL file to write generation outputs. If not provided, defaults to generation/<model>/<timestamp>.jsonl",
     required=False,
 )
 
 _INPUT_DATA = flags.DEFINE_string(
-    "--evaluation-file",
+    "evaluation-file",
     None,
     "Path to model generation JSONL (must contain prompt/response; used for evaluation).",
     required=False,
 )
 
 _OUTPUT_DIR = flags.DEFINE_string(
-    "--output-dir",
-    "eval",
-    "Output directory for evaluation results.",
+    "output-dir",
+    None,
+    "Output directory for evaluation results. Defaults to eval/<model>/<timestamp>",
     required=False,
 )
 
@@ -226,7 +226,7 @@ def _run_generation() -> None:
   output_file = _OUTPUT_FILE.value
   if not output_file:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join("output", f"{_HARDCODED_MODEL_ID}_{ts}.jsonl")
+    output_file = os.path.join("generation", _HARDCODED_MODEL_ID.replace("/", "_"), f"{ts}.jsonl")
 
   _ensure_parent_dir(output_file)
   existing_keys = _read_existing_keys(output_file)
@@ -244,6 +244,30 @@ def _run_generation() -> None:
   if "key" not in df.columns or "prompt" not in df.columns:
     raise ValueError("Parquet must contain 'key' and 'prompt' columns.")
 
+  def _normalize_messages(raw_messages: Any) -> List[Dict[str, Any]]:
+    messages = raw_messages
+    if isinstance(messages, str):
+      try:
+        messages = json.loads(messages)
+      except json.JSONDecodeError as e:
+        raise ValueError("Parquet 'messages' must be a list of dicts or JSON string.") from e
+    if isinstance(messages, dict):
+      messages = [messages]
+    if not isinstance(messages, list):
+      messages = list(messages)
+
+    normalized: List[Dict[str, Any]] = []
+    for i, m in enumerate(messages):
+      if isinstance(m, str):
+        try:
+          m = json.loads(m)
+        except json.JSONDecodeError as e:
+          raise ValueError(f"Parquet 'messages[{i}]' must be a dict or JSON dict string.") from e
+      if not isinstance(m, dict):
+        raise ValueError(f"Parquet 'messages[{i}]' must be a dict.")
+      normalized.append(m)
+    return normalized
+
   def _make_create_kwargs(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     create_kwargs: Dict[str, Any] = {
         "model": model_name,
@@ -252,7 +276,15 @@ def _run_generation() -> None:
     if temperature is not None:
       create_kwargs["temperature"] = float(temperature)
     if extra_body is not None:
-      create_kwargs["extra_body"] = extra_body
+      normalized_extra_body = extra_body
+      if isinstance(normalized_extra_body, str):
+        try:
+          normalized_extra_body = yaml.safe_load(normalized_extra_body)
+        except yaml.YAMLError as e:
+          raise ValueError("models.yaml extra_body string must be valid YAML/JSON.") from e
+      if not isinstance(normalized_extra_body, dict):
+        raise ValueError("models.yaml extra_body must be a dict (or YAML/JSON string dict).")
+      create_kwargs["extra_body"] = normalized_extra_body
     if max_tokens is not None:
       create_kwargs["max_tokens"] =max_tokens
     return create_kwargs
@@ -266,12 +298,17 @@ def _run_generation() -> None:
       thread_local.client = client
     return client
 
-  def _stream_chat_completion_text(client: OpenAI, create_kwargs: Dict[str, Any]) -> str:
+  def _stream_chat_completion_text(client: OpenAI, create_kwargs: Dict[str, Any]) -> Tuple[str, int]:
     parts: List[str] = []
     stream_kwargs = dict(create_kwargs)
     stream_kwargs["stream"] = True
+    stream_kwargs["stream_options"] = {"include_usage": True}
 
+    total_tokens = 0
     for chunk in client.chat.completions.create(**stream_kwargs):
+      if hasattr(chunk, "usage") and chunk.usage:
+        total_tokens = chunk.usage.total_tokens
+
       choices = getattr(chunk, "choices", None)
       if not choices:
         continue
@@ -288,7 +325,7 @@ def _run_generation() -> None:
       if isinstance(content_piece, str) and content_piece:
         parts.append(content_piece)
 
-    return "".join(parts)
+    return "".join(parts), total_tokens
 
   def _generate_one(key: int, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     client = _get_client()
@@ -297,13 +334,15 @@ def _run_generation() -> None:
     try:
       if _GENERATION_SLEEP_S > 0:
         time.sleep(_GENERATION_SLEEP_S)
-      content = _stream_chat_completion_text(client, create_kwargs)
+      content, total_tokens = _stream_chat_completion_text(client, create_kwargs)
       if content == "":
         resp = client.chat.completions.create(**create_kwargs)
         content = resp.choices[0].message.content
+        if resp.usage:
+          total_tokens = resp.usage.total_tokens
         if content is None:
           content = ""
-      return {"key": key, "response": content}
+      return {"key": key, "response": content, "total_tokens": total_tokens}
     except Exception as e:
       logging.warning("Generation error for key=%s: %s", key, e)
       raise
@@ -331,7 +370,7 @@ def _run_generation() -> None:
     prompt = str(getattr(row, "prompt"))
     prompt_by_key[key] = prompt
     raw_messages = getattr(row, "messages")
-    messages = list(raw_messages)
+    messages = _normalize_messages(raw_messages)
     pending.append((key, messages))
 
   total_count = len(df)
@@ -384,14 +423,17 @@ def _run_evaluation() -> None:
   prompt_to_response = _read_prompt_to_response_dict_from_generations(_INPUT_DATA.value)
 
   output_dir = _OUTPUT_DIR.value
+  ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+  if not output_dir:
+    output_dir = os.path.join("eval", _HARDCODED_MODEL_ID.replace("/", "_"), ts)
+  
   os.makedirs(output_dir, exist_ok=True)
 
   input_base = os.path.splitext(os.path.basename(_INPUT_DATA.value))[0]
-  ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
   for func, output_file_name in [
-      (evaluation_lib.test_instruction_following_strict, "eval_results_strict"),
-      (evaluation_lib.test_instruction_following_loose, "eval_results_loose"),
+      (evaluation_lib.test_instruction_following_strict, "strict"),
+      (evaluation_lib.test_instruction_following_loose, "loose"),
   ]:
     suffix = "strict" if func == evaluation_lib.test_instruction_following_strict else "loose"
     logging.info("Generating %s...", output_file_name)
@@ -421,7 +463,7 @@ def _run_evaluation() -> None:
     accuracy = sum(follow_all_instructions) / len(outputs)
     logging.info("Accuracy: %f", accuracy)
 
-    output_file_name = os.path.join(output_dir, f"{input_base}_{suffix}.jsonl")
+    output_file_name = os.path.join(output_dir, f"{suffix}.jsonl")
     report_dict = evaluation_lib.compute_report(outputs)
     summary_record = {
         "type": "summary",
