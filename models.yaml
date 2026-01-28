@@ -61,6 +61,11 @@ models:
     base_url: https://api.moonshot.cn/v1
     api_key: "${MOONSHOT_API_KEY}"
   
+  - name: kimi-k2.5
+    temperature: 1.0
+    base_url: https://api.moonshot.cn/v1
+    api_key: "${MOONSHOT_API_KEY}"
+  
   - name: doubao-seed-1-8-251228
     temperature: 1.0
     base_url: https://ark.cn-beijing.volces.com/api/v3

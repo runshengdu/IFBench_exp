@@ -12,14 +12,28 @@ IFBench consists of two parts:
 
 - New IF-RLVR training constraints: 29 new and challenging constraints, with corresponding verification functions. 
 
-## How to run the evaluation
+## How to run generation & evaluation
 Install the requirements via the requirements.txt file.
-You need two jsonl files, one the IFBench_test.jsonl file (in the data folder) and one your file with eval prompts and completions (see sample_output.jsonl as an example). Then run:
+
+### Generation
+Run generation against the parquet file (OpenAI chat format). The script reads model settings from `models.yaml`:
 ```
-python3 -m run_eval --input_data=IFBench_test.jsonl --input_response_data=sample_output.jsonl --output_dir=eval
+python run_eval.py \
+  --model-id=deepseek-reasoner \
+  --input-parquet data\test-00000-of-00001.parquet \
+  --save-to generation\deepseek-reasoner\20260128_160936.jsonl
 ```
 
-Note: In the paper we generally report the prompt-level loose accuracy of IFBench. When we generate for evaluation, we use a temperature of 0 and adjust the maximum generated tokens depending on the model type, i.e. for thinking models we allow to generate more tokens and we then process the output to extract the answer without the reasoning chains.
+### Evaluation
+You need the IFBench parquet (`data/test-00000-of-00001.parquet`) and a JSONL file with `prompt` and `response` (the generation output). Then run:
+```
+python run_eval.py \
+  --evaluation-file generation\deepseek-reasoner\20260128_160936.jsonl \
+  --input-parquet data\test-00000-of-00001.parquet
+```
+By default, evaluation outputs are written to `eval/<model>/<timestamp>/` (the model name is inferred from the evaluation file path).
+
+Note: In the paper we generally report the prompt-level loose accuracy of IFBench. When we generate for evaluation, we use a temperature of 0 and adjust the maximum generated tokens depending on the model type, i.e. for thinking models we allow more tokens and then post-process to extract the answer without reasoning chains.
 
 ## Released Datasets
 You can find our released datasets in this [collection](https://huggingface.co/collections/allenai/ifbench-683f590687f61b512558cdf1), which contains the [test data](https://huggingface.co/datasets/allenai/IFBench_test), the [multi-turn test data](https://huggingface.co/datasets/allenai/IFBench_multi-turn) and the [IF-RLVR training data](https://huggingface.co/datasets/allenai/IF_multi_constraints_upto5).

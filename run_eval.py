@@ -16,10 +16,14 @@ import yaml
 from openai import OpenAI
 from tqdm import tqdm
 
+_MODEL_ID = flags.DEFINE_string(
+    "model-id",
+    "deepseek-reasoner",
+    "Model id from models.yaml to use for generation/evaluation.",
+    required=False,
+)
 
-_HARDCODED_MODEL_ID = "deepseek-reasoner"
-
-_GENERATION_MAX_WORKERS = 50
+_GENERATION_MAX_WORKERS = 150
 _GENERATION_MAX_RETRIES = 3
 _GENERATION_SLEEP_S = 0
 
@@ -209,7 +213,7 @@ def _get_num_tasks_or_none() -> Optional[int]:
 
 
 def _run_generation() -> None:
-  model_cfg = _load_model_config(_MODELS_YAML.value, _HARDCODED_MODEL_ID)
+  model_cfg = _load_model_config(_MODELS_YAML.value, _MODEL_ID.value)
 
   model_name = model_cfg["name"]
   temperature = model_cfg.get("temperature")
@@ -226,7 +230,7 @@ def _run_generation() -> None:
   output_file = _OUTPUT_FILE.value
   if not output_file:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join("generation", _HARDCODED_MODEL_ID.replace("/", "_"), f"{ts}.jsonl")
+    output_file = os.path.join("generation", _MODEL_ID.value.replace("/", "_"), f"{ts}.jsonl")
 
   _ensure_parent_dir(output_file)
   existing_keys = _read_existing_keys(output_file)
@@ -422,14 +426,28 @@ def _run_evaluation() -> None:
   inputs = _read_benchmark_inputs_from_parquet(_INPUT_PARQUET.value)
   prompt_to_response = _read_prompt_to_response_dict_from_generations(_INPUT_DATA.value)
 
+  def _infer_model_folder_name(evaluation_file: str) -> str:
+    norm = os.path.normpath(evaluation_file)
+    parts = norm.split(os.sep)
+    try:
+      gen_idx = parts.index("generation")
+      if gen_idx + 1 < len(parts):
+        return parts[gen_idx + 1]
+    except ValueError:
+      pass
+    base = os.path.splitext(os.path.basename(evaluation_file))[0]
+    if "_" in base:
+      return base.split("_", 1)[0]
+    return _MODEL_ID.value
+
+  model_folder = _infer_model_folder_name(_INPUT_DATA.value)
+
   output_dir = _OUTPUT_DIR.value
   ts = datetime.now().strftime("%Y%m%d_%H%M%S")
   if not output_dir:
-    output_dir = os.path.join("eval", _HARDCODED_MODEL_ID.replace("/", "_"), ts)
+    output_dir = os.path.join("eval", model_folder.replace("/", "_"), ts)
   
   os.makedirs(output_dir, exist_ok=True)
-
-  input_base = os.path.splitext(os.path.basename(_INPUT_DATA.value))[0]
 
   for func, output_file_name in [
       (evaluation_lib.test_instruction_following_strict, "strict"),
