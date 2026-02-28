@@ -23,8 +23,18 @@ _MODEL_ID = flags.DEFINE_string(
     required=False,
 )
 
-_GENERATION_MAX_WORKERS = 50
-_GENERATION_MAX_RETRIES = 3
+_GENERATION_MAX_WORKERS = flags.DEFINE_integer(
+    "max-workers",
+    50,
+    "Max worker threads to use during generation.",
+    required=False,
+)
+_GENERATION_MAX_RETRIES = flags.DEFINE_integer(
+    "max-retries",
+    3,
+    "Max retries per generation task (if implemented).",
+    required=False,
+)
 _GENERATION_SLEEP_S = 0
 
 _MODELS_YAML = flags.DEFINE_string(
@@ -356,12 +366,7 @@ def _run_generation() -> None:
     key_text = key if key is not None else "<unknown>"
     print(f"Task key={key_text} failed.")
     print(f"Error: {e}")
-    while True:
-      ans = input("Skip this task and continue? [y/n]: ").strip().lower()
-      if ans in ("y"):
-        return True
-      if ans in ("n"):
-        return False
+    return True
 
   pending: List[tuple[int, List[Dict[str, Any]]]] = []
   prompt_by_key: Dict[int, str] = {}
@@ -381,7 +386,7 @@ def _run_generation() -> None:
   pbar = tqdm(total=total_count, initial=done_count, desc="Generating", unit="task")
   try:
     with open(output_file, "a", encoding="utf-8") as out_f:
-      with ThreadPoolExecutor(max_workers=_GENERATION_MAX_WORKERS) as executor:
+      with ThreadPoolExecutor(max_workers=_GENERATION_MAX_WORKERS.value) as executor:
         futures: List[Future] = []
         future_to_key: Dict[Future, int] = {}
         for key, messages in pending:
