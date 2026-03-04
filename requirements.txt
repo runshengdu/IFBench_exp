@@ -11,4 +11,4 @@ pyyaml
 pandas
 pyarrow
 tqdm
-setuptools<70
+setuptools<82
