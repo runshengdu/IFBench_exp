@@ -144,6 +144,10 @@ def _ensure_parent_dir(path: str) -> None:
     os.makedirs(parent, exist_ok=True)
 
 
+def _sanitize_path_component(value: str) -> str:
+  return value.replace(":", "_")
+
+
 def _read_benchmark_inputs_from_parquet(parquet_path: str) -> List[evaluation_lib.InputExample]:
   df = pd.read_parquet(parquet_path)
   required_cols = {"key", "prompt", "instruction_id_list", "kwargs"}
@@ -240,7 +244,11 @@ def _run_generation() -> None:
   output_file = _OUTPUT_FILE.value
   if not output_file:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join("generation", _MODEL_ID.value.replace("/", "_"), f"{ts}.jsonl")
+    output_file = os.path.join(
+        "generation",
+        _sanitize_path_component(_MODEL_ID.value.replace("/", "_")),
+        f"{ts}.jsonl",
+    )
 
   _ensure_parent_dir(output_file)
   existing_keys = _read_existing_keys(output_file)
@@ -450,7 +458,11 @@ def _run_evaluation() -> None:
   output_dir = _OUTPUT_DIR.value
   ts = datetime.now().strftime("%Y%m%d_%H%M%S")
   if not output_dir:
-    output_dir = os.path.join("eval", model_folder.replace("/", "_"), ts)
+    output_dir = os.path.join(
+        "eval",
+        _sanitize_path_component(model_folder.replace("/", "_")),
+        ts,
+    )
   
   os.makedirs(output_dir, exist_ok=True)
 
