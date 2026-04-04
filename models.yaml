@@ -65,6 +65,13 @@ models:
     extra_body: {"enable_thinking": true}
     max_tokens: 60000
   
+  - name: qwen3.6-plus
+    temperature: 1.0
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: "${DASHSCOPE_API_KEY}"
+    extra_body: {"enable_thinking": true}
+    max_tokens: 60000
+  
   - name: qwen3.5-flash
     temperature: 1.0
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
