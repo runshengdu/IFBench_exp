@@ -45,6 +45,12 @@ models:
     api_key: "${GLM_API_KEY}"
     max_tokens: 60000
   
+  - name: glm-5.1
+    temperature: 1.0
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key: "${GLM_API_KEY}"
+    max_tokens: 60000
+  
   - name: kimi-k2.5
     temperature: 1.0
     base_url: https://api.moonshot.cn/v1
