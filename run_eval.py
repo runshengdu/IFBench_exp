@@ -4,13 +4,23 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 from datetime import datetime
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from absl import app
 from absl import flags
 from absl import logging
+
+_REPO_ROOT = Path(__file__).resolve().parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+_src = _REPO_ROOT / "src"
+if _src.is_dir() and str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
+
 import evaluation_lib
+import ifbench_parquet
 import pandas as pd
 import yaml
 from openai import OpenAI
@@ -148,6 +158,76 @@ def _sanitize_path_component(value: str) -> str:
   return value.replace(":", "_")
 
 
+def default_generation_jsonl_path(model_id: str) -> str:
+  """Default output path for generation, aligned with _run_generation()."""
+  ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+  return os.path.join(
+      "generation",
+      _sanitize_path_component(model_id.replace("/", "_")),
+      f"{ts}.jsonl",
+  )
+
+
+def _normalize_messages_for_ifbench_parquet(
+    raw_messages: Any,
+) -> List[Dict[str, Any]]:
+  """Parse messages from IFBench parquet (list of dicts, or JSON / mixed)."""
+  messages = raw_messages
+  if isinstance(messages, str):
+    try:
+      messages = json.loads(messages)
+    except json.JSONDecodeError as e:
+      raise ValueError("Parquet 'messages' must be a list of dicts or JSON string.") from e
+  if isinstance(messages, dict):
+    messages = [messages]
+  if not isinstance(messages, list):
+    messages = list(messages)
+
+  normalized: List[Dict[str, Any]] = []
+  for i, m in enumerate(messages):
+    if isinstance(m, str):
+      try:
+        m = json.loads(m)
+      except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Parquet 'messages[{i}]' must be a dict or JSON dict string."
+        ) from e
+    if not isinstance(m, dict):
+      raise ValueError(f"Parquet 'messages[{i}]' must be a dict.")
+    normalized.append(m)
+  return normalized
+
+
+def _make_chat_completion_create_kwargs(
+    model_cfg: Dict[str, Any], messages: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+  """Build kwargs for `client.chat.completions.create` (same as batch chat body, before flatten)."""
+  model_name = model_cfg["name"]
+  temperature = model_cfg.get("temperature")
+  extra_body = model_cfg.get("extra_body")
+  max_tokens = model_cfg.get("max_tokens")
+
+  create_kwargs: Dict[str, Any] = {
+      "model": model_name,
+      "messages": messages,
+  }
+  if temperature is not None:
+    create_kwargs["temperature"] = float(temperature)
+  if extra_body is not None:
+    normalized_extra_body = extra_body
+    if isinstance(normalized_extra_body, str):
+      try:
+        normalized_extra_body = yaml.safe_load(normalized_extra_body)
+      except yaml.YAMLError as e:
+        raise ValueError("models.yaml extra_body string must be valid YAML/JSON.") from e
+    if not isinstance(normalized_extra_body, dict):
+      raise ValueError("models.yaml extra_body must be a dict (or YAML/JSON string dict).")
+    create_kwargs["extra_body"] = normalized_extra_body
+  if max_tokens is not None:
+    create_kwargs["max_tokens"] = max_tokens
+  return create_kwargs
+
+
 def _read_benchmark_inputs_from_parquet(parquet_path: str) -> List[evaluation_lib.InputExample]:
   df = pd.read_parquet(parquet_path)
   required_cols = {"key", "prompt", "instruction_id_list", "kwargs"}
@@ -218,23 +298,11 @@ def _read_prompt_to_response_dict_from_generations(generations_jsonl_path: str) 
   return prompt_to_response
 
 
-def _get_num_tasks_or_none() -> Optional[int]:
-  if _NUM_TASKS.value is None:
-    return None
-  if _NUM_TASKS.value <= 0:
-    raise ValueError("--num_tasks must be a positive integer.")
-  return int(_NUM_TASKS.value)
-
-
 def _run_generation() -> None:
   model_cfg = _load_model_config(_MODELS_YAML.value, _MODEL_ID.value)
 
-  model_name = model_cfg["name"]
-  temperature = model_cfg.get("temperature")
   base_url = model_cfg["base_url"]
   api_key = model_cfg["api_key"]
-  extra_body = model_cfg.get("extra_body")
-  max_tokens=model_cfg.get("max_tokens")
 
   py_logging.getLogger("openai").setLevel(py_logging.WARNING)
   py_logging.getLogger("openai._client").setLevel(py_logging.WARNING)
@@ -243,73 +311,19 @@ def _run_generation() -> None:
 
   output_file = _OUTPUT_FILE.value
   if not output_file:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(
-        "generation",
-        _sanitize_path_component(_MODEL_ID.value.replace("/", "_")),
-        f"{ts}.jsonl",
-    )
+    output_file = default_generation_jsonl_path(_MODEL_ID.value)
 
   _ensure_parent_dir(output_file)
   existing_keys = _read_existing_keys(output_file)
   if existing_keys:
     logging.info("Resuming generation: %d keys already in %s", len(existing_keys), output_file)
 
-  df = pd.read_parquet(_INPUT_PARQUET.value)
-  num_tasks = _get_num_tasks_or_none()
-  if num_tasks is not None:
-    df = df.head(num_tasks)
-  if "messages" not in df.columns and "message" not in df.columns:
-    raise ValueError("Parquet must contain 'messages' column (OpenAI chat format).")
-  if "messages" not in df.columns:
-    df = df.rename(columns={"message": "messages"})
-  if "key" not in df.columns or "prompt" not in df.columns:
-    raise ValueError("Parquet must contain 'key' and 'prompt' columns.")
-
-  def _normalize_messages(raw_messages: Any) -> List[Dict[str, Any]]:
-    messages = raw_messages
-    if isinstance(messages, str):
-      try:
-        messages = json.loads(messages)
-      except json.JSONDecodeError as e:
-        raise ValueError("Parquet 'messages' must be a list of dicts or JSON string.") from e
-    if isinstance(messages, dict):
-      messages = [messages]
-    if not isinstance(messages, list):
-      messages = list(messages)
-
-    normalized: List[Dict[str, Any]] = []
-    for i, m in enumerate(messages):
-      if isinstance(m, str):
-        try:
-          m = json.loads(m)
-        except json.JSONDecodeError as e:
-          raise ValueError(f"Parquet 'messages[{i}]' must be a dict or JSON dict string.") from e
-      if not isinstance(m, dict):
-        raise ValueError(f"Parquet 'messages[{i}]' must be a dict.")
-      normalized.append(m)
-    return normalized
+  df = ifbench_parquet.load_ifbench_generation_dataframe(
+      _INPUT_PARQUET.value, _NUM_TASKS.value
+  )
 
   def _make_create_kwargs(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    create_kwargs: Dict[str, Any] = {
-        "model": model_name,
-        "messages": messages,
-    }
-    if temperature is not None:
-      create_kwargs["temperature"] = float(temperature)
-    if extra_body is not None:
-      normalized_extra_body = extra_body
-      if isinstance(normalized_extra_body, str):
-        try:
-          normalized_extra_body = yaml.safe_load(normalized_extra_body)
-        except yaml.YAMLError as e:
-          raise ValueError("models.yaml extra_body string must be valid YAML/JSON.") from e
-      if not isinstance(normalized_extra_body, dict):
-        raise ValueError("models.yaml extra_body must be a dict (or YAML/JSON string dict).")
-      create_kwargs["extra_body"] = normalized_extra_body
-    if max_tokens is not None:
-      create_kwargs["max_tokens"] =max_tokens
-    return create_kwargs
+    return _make_chat_completion_create_kwargs(model_cfg, messages)
 
   thread_local = threading.local()
 
@@ -387,7 +401,7 @@ def _run_generation() -> None:
     prompt = str(getattr(row, "prompt"))
     prompt_by_key[key] = prompt
     raw_messages = getattr(row, "messages")
-    messages = _normalize_messages(raw_messages)
+    messages = _normalize_messages_for_ifbench_parquet(raw_messages)
     pending.append((key, messages))
 
   total_count = len(df)

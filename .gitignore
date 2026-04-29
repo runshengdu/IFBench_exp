@@ -1,2 +1,5 @@
 .ifbench/
 .ifbench
+eval
+generation
+batch_api/**/artifacts

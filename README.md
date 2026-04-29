@@ -13,27 +13,110 @@ IFBench consists of two parts:
 - New IF-RLVR training constraints: 29 new and challenging constraints, with corresponding verification functions. 
 
 ## How to run generation & evaluation
-Install the requirements via the requirements.txt file.
 
-### Generation
-Run generation against the parquet file (OpenAI chat format). The script reads model settings from `models.yaml`:
+Install dependencies first:
+```
+pip install -r requirements.txt
+```
+
+### Code layout (updated)
+
+- `run_eval.py`: main entrypoint for online generation and evaluation.
+- `src/ifbench_parquet.py`: shared parquet loader used by both online and batch generation.
+- `src/evaluation_lib.py`: strict/loose evaluation and report writing.
+- `src/instructions.py`, `src/instructions_registry.py`, `src/instructions_util.py`: instruction checkers and registry.
+- `batch_api/moonshot/moonshot.py`: batch pipeline for Moonshot/Kimi models.
+- `batch_api/qwen/qwen.py`: batch pipeline for Qwen (DashScope) models.
+
+### Model configuration (`models.yaml`)
+
+`run_eval.py` and batch scripts both read model config from `models.yaml`:
+- `name`: model id passed via `--model-id`
+- `base_url`: OpenAI-compatible endpoint
+- `api_key`: supports env var form like `${DASHSCOPE_API_KEY}`
+- optional `temperature`, `max_tokens`, `extra_body`
+
+### Online generation (`run_eval.py`)
+
+Run generation against IFBench parquet (expects `key`, `prompt`, `messages` or `message`):
 ```
 python run_eval.py \
-  --model-id=deepseek-reasoner \
-  --input-parquet data\test-00000-of-00001.parquet \
-  --save-to generation\deepseek-reasoner\20260128_160936.jsonl
+  --model-id deepseek-v4-pro \
+  --input-parquet data/test-00000-of-00001.parquet \
+  --save-to generation/deepseek-v4-pro/20260429_120000.jsonl
 ```
 
-### Evaluation
-You need the IFBench parquet (`data/test-00000-of-00001.parquet`) and a JSONL file with `prompt` and `response` (the generation output). Then run:
+Useful flags:
+- `--num-tasks`: only generate first N rows from parquet.
+- `--max-workers`: thread count for generation (default `50`).
+- `--models_yaml`: alternative model config path.
+- `--save-to` omitted -> defaults to `generation/<model>/<timestamp>.jsonl`.
+
+Generation output JSONL contains at least:
+- `key`
+- `prompt`
+- `response`
+- `total_tokens`
+
+If `--save-to` already exists, generation auto-resumes by skipping existing `key`s.
+
+### Evaluation (`run_eval.py`)
+
+Evaluate with parquet + generation JSONL:
 ```
 python run_eval.py \
-  --evaluation-file generation\deepseek-reasoner\20260128_160936.jsonl \
-  --input-parquet data\test-00000-of-00001.parquet
+  --evaluation-file generation/deepseek-v4-pro/20260429_120000.jsonl \
+  --input-parquet data/test-00000-of-00001.parquet
 ```
-By default, evaluation outputs are written to `eval/<model>/<timestamp>/` (the model name is inferred from the evaluation file path).
 
-Note: In the paper we generally report the prompt-level loose accuracy of IFBench. When we generate for evaluation, we use a temperature of 0 and adjust the maximum generated tokens depending on the model type, i.e. for thinking models we allow more tokens and then post-process to extract the answer without reasoning chains.
+Output defaults to `eval/<model>/<timestamp>/` (or set `--output-dir`), and writes:
+- `strict.jsonl`
+- `loose.jsonl`
+
+Each file starts with a summary record, followed by per-example results.  
+In the paper, we generally report prompt-level loose accuracy.
+
+### Batch generation (Moonshot / Qwen)
+
+Both batch scripts produce the same generation JSONL format as `run_eval.py`, so you can evaluate with the same evaluation command.
+
+#### Moonshot (Kimi)
+```
+python batch_api/moonshot/moonshot.py \
+  --model-id kimi-k2.6 \
+  --input-parquet data/test-00000-of-00001.parquet \
+  --save-to generation/kimi-k2.6/20260429_120000.jsonl \
+  --step all
+```
+
+Defaults:
+- artifacts under `batch_api/moonshot/artifacts/<model>/<timestamp>/`
+- `--max-tasks-per-batch 1000` (Kimi file-size/task-limit friendly)
+
+#### Qwen (DashScope)
+```
+python batch_api/qwen/qwen.py \
+  --model-id qwen3.6-flash \
+  --input-parquet data/test-00000-of-00001.parquet \
+  --save-to generation/qwen3.6-flash/20260429_120000.jsonl \
+  --step all
+```
+
+Defaults:
+- artifacts under `batch_api/qwen/artifacts/<model>/<timestamp>/`
+- `--max-tasks-per-batch 5000`
+- `--completion-window` validated in `[24h, 336h]`
+
+#### Step-by-step mode (both scripts)
+
+You can run stages manually:
+1. `--step prepare` (build `batch_input_cXXX.jsonl`, `meta.json`, and key payload maps)
+2. `--step upload --run-dir <run_dir>`
+3. `--step create --run-dir <run_dir>`
+4. `--step wait --run-dir <run_dir>`
+5. `--step collect --run-dir <run_dir>`
+
+For multi-chunk runs, use `--chunk-index` for split steps, or just run `--step all` to process every chunk sequentially.
 
 ## Released Datasets
 You can find our released datasets in this [collection](https://huggingface.co/collections/allenai/ifbench-683f590687f61b512558cdf1), which contains the [test data](https://huggingface.co/datasets/allenai/IFBench_test), the [multi-turn test data](https://huggingface.co/datasets/allenai/IFBench_multi-turn) and the [IF-RLVR training data](https://huggingface.co/datasets/allenai/IF_multi_constraints_upto5).

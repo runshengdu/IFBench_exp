@@ -33,11 +33,19 @@ models:
     max_tokens: 60000
     extra_body: {"reasoning_split": true}
 
-  - name: deepseek-reasoner
+  - name: deepseek-v4-pro
     temperature: 1.0
     base_url: https://api.deepseek.com
     api_key: "${DEEPSEEK_API_KEY}"
-    max_tokens: 60000
+    max_tokens: 20000
+    extra_body: {thinking: {type: enabled},reasoning_effort: "high"}
+  
+  - name: deepseek-v4-flash
+    temperature: 1.0
+    base_url: https://api.deepseek.com
+    api_key: "${DEEPSEEK_API_KEY}"
+    max_tokens: 20000
+    extra_body: {thinking: {type: enabled},reasoning_effort: "high"}
 
   - name: glm-5
     temperature: 1.0
@@ -52,6 +60,12 @@ models:
     max_tokens: 60000
   
   - name: kimi-k2.5
+    temperature: 1.0
+    base_url: https://api.moonshot.cn/v1
+    api_key: "${MOONSHOT_API_KEY}"
+    max_tokens: 60000
+
+  - name: kimi-k2.6
     temperature: 1.0
     base_url: https://api.moonshot.cn/v1
     api_key: "${MOONSHOT_API_KEY}"
@@ -79,6 +93,13 @@ models:
     max_tokens: 60000
   
   - name: qwen3.5-flash
+    temperature: 1.0
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: "${DASHSCOPE_API_KEY}"
+    extra_body: {"enable_thinking": true}
+    max_tokens: 60000
+  
+  - name: qwen3.6-flash
     temperature: 1.0
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api_key: "${DASHSCOPE_API_KEY}"
