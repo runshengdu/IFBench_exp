@@ -206,6 +206,7 @@ def _make_chat_completion_create_kwargs(
   temperature = model_cfg.get("temperature")
   extra_body = model_cfg.get("extra_body")
   max_tokens = model_cfg.get("max_tokens")
+  max_completion_tokens = model_cfg.get("max_completion_tokens")
 
   create_kwargs: Dict[str, Any] = {
       "model": model_name,
@@ -225,6 +226,8 @@ def _make_chat_completion_create_kwargs(
     create_kwargs["extra_body"] = normalized_extra_body
   if max_tokens is not None:
     create_kwargs["max_tokens"] = max_tokens
+  if max_completion_tokens is not None:
+    create_kwargs["max_completion_tokens"] = max_completion_tokens
   return create_kwargs
 
 
