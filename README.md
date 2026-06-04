@@ -65,7 +65,7 @@ If `--save-to` already exists, generation auto-resumes by skipping existing `key
 Evaluate with parquet + generation JSONL:
 ```
 python run_eval.py \
-  --evaluation-file generation/deepseek-v4-pro/20260429_120000.jsonl \
+  --eval-file generation/deepseek-v4-pro/20260429_120000.jsonl \
   --input-parquet data/test-00000-of-00001.parquet
 ```
 

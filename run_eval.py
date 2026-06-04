@@ -73,7 +73,7 @@ _OUTPUT_FILE = flags.DEFINE_string(
 )
 
 _INPUT_DATA = flags.DEFINE_string(
-    "evaluation-file",
+    "eval-file",
     None,
     "Path to model generation JSONL (must contain prompt/response; used for evaluation).",
     required=False,
@@ -501,7 +501,7 @@ def _run_evaluation() -> None:
     total = len(inputs)
     if evaluated == 0:
       raise ValueError(
-          "No prompts in --input-data matched the benchmark prompts; cannot evaluate."
+          "No prompts in --eval-file matched the benchmark prompts; cannot evaluate."
       )
     if missing_prompts:
       logging.warning(
