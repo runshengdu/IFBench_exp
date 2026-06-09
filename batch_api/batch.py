@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from openai import OpenAI
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 _src = REPO_ROOT / "src"
@@ -31,6 +32,23 @@ KIMI_BATCH_FORBIDDEN_PARAMS = {
     "presence_penalty",
     "frequency_penalty",
 }
+BatchProvider = Literal["moonshot", "qwen"]
+
+
+def infer_batch_provider(model_id: str) -> BatchProvider:
+    mid = str(model_id).strip().lower()
+    if mid.startswith("kimi-"):
+        return "moonshot"
+    if mid.startswith("qwen"):
+        return "qwen"
+    raise ValueError(
+        f"Cannot infer batch provider for --model-id {model_id!r}; "
+        "supported prefixes: kimi-*, qwen*"
+    )
+
+
+def is_kimi_model(model_id: str) -> bool:
+    return infer_batch_provider(model_id) == "moonshot"
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,11 +59,14 @@ def parse_args() -> argparse.Namespace:
         "--step",
         type=str,
         default="all",
-        choices=["all", "prepare", "upload", "create", "wait", "collect", "submit", "poll"],
-        help="Pipeline step. Full flow: prepare / upload / create / wait / collect.",
+        choices=["all", "prepare", "upload", "create", "wait", "collect", "cancel", "submit", "poll"],
+        help="Pipeline step. Full flow: prepare / upload / create / wait / collect. Use cancel to stop a batch.",
     )
     parser.add_argument(
-        "--model-id", type=str, default="kimi-k2.6", help="Model id in models.yaml (name field)"
+        "--model-id",
+        type=str,
+        required=True,
+        help="Model id in models.yaml (name field). Provider inferred from prefix: kimi-*, qwen*.",
     )
     parser.add_argument(
         "--input-parquet",
@@ -72,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         "--completion-window",
         type=str,
         default="24h",
-        help="Batch completion window (e.g. 24h).",
+        help="Batch completion window (e.g. 24h). Must be between 24h and 336h.",
     )
     parser.add_argument(
         "--poll-interval-seconds",
@@ -83,23 +104,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         type=str,
-        default="batch_api/moonshot/artifacts",
+        default="batch_api/artifacts",
         help="Directory for batch_input.jsonl, meta.json, etc.",
     )
     parser.add_argument(
         "--run-dir",
         type=str,
         default=None,
-        help="Run directory; required for upload / create / wait / collect (after prepare).",
+        help="Run directory; required for upload / create / wait / collect / cancel (after prepare).",
     )
     parser.add_argument(
-        "--batch-id", type=str, default=None, help="Override batch id for wait / collect if needed."
+        "--batch-id", type=str, default=None, help="Override batch id for wait / collect / cancel if needed."
     )
     parser.add_argument(
         "--max-tasks-per-batch",
         type=int,
         default=1000,
-        help="Max lines per batch file (Kimi caps at 1000; split into multiple files when over).",
+        help="Max lines per batch file (split into multiple files when over).",
     )
     parser.add_argument(
         "--chunk-index",
@@ -146,10 +167,26 @@ def build_batch_request_body(
     create_kwargs: dict[str, Any],
 ) -> dict[str, Any]:
     body: dict[str, Any] = dict(merge_create_kwargs_to_batch_body(create_kwargs))
-    if model_id_for_filter in {"kimi-k2.5", "kimi-k2.6"}:
+    if is_kimi_model(model_id_for_filter):
         for k in KIMI_BATCH_FORBIDDEN_PARAMS:
             body.pop(k, None)
     return body
+
+
+def validate_completion_window(value: str) -> str:
+    """Validate completion_window (24h–336h)."""
+    s = str(value).strip().lower()
+    m = re.fullmatch(r"(\d+)([hd])", s)
+    if not m:
+        raise ValueError(
+            "completion_window must be an integer followed by 'h' or 'd' (e.g. 24h, 14d)"
+        )
+    amount = int(m.group(1))
+    unit = m.group(2)
+    hours = amount if unit == "h" else amount * 24
+    if not (24 <= hours <= 336):
+        raise ValueError("completion_window must be between 24h and 336h")
+    return s
 
 
 def make_client(model_id: str, models_yaml: str) -> OpenAI:
@@ -338,8 +375,15 @@ def poll_batch(client: OpenAI, batch_id: str, poll_interval_seconds: int) -> Any
         time.sleep(max(1, int(poll_interval_seconds)))
 
 
+def cancel_batch(client: OpenAI, batch_id: str) -> Any:
+    batch = client.batches.cancel(batch_id)
+    print(f"batch cancel requested: {batch.id} (status={batch.status})")
+    return batch
+
+
 def stage_prepare(args: argparse.Namespace) -> Path:
     model_id = str(args.model_id)
+    batch_provider = infer_batch_provider(model_id)
     models_yaml = _models_yaml_path(args)
     responses_output = _resolve_responses_path(args)
 
@@ -425,6 +469,7 @@ def stage_prepare(args: argparse.Namespace) -> Path:
         "version": 3,
         "ifbench": True,
         "model": model_id,
+        "batch_provider": batch_provider,
         "input_parquet": input_parquet_resolved,
         "save_to": responses_output,
         "models_yaml": str(Path(models_yaml).resolve()) if Path(models_yaml).is_file() else models_yaml,
@@ -443,7 +488,7 @@ def stage_prepare(args: argparse.Namespace) -> Path:
     n_ch = len(chunks)
     print(
         f"prepare done, run_dir={run_dir} "
-        f"({n_ch} batch file(s), {max_per} lines max per file, "
+        f"(provider={batch_provider}, {n_ch} batch file(s), {max_per} lines max per file, "
         f"{len(set(all_submitted))} key(s) total, "
         f"resume skipped in benchmark slice: {metadata['resume_skipped']})"
     )
@@ -519,8 +564,8 @@ def stage_create(args: argparse.Namespace, run_dir: Path) -> str:
     input_file_id = ch.get("input_file_id")
     if not input_file_id:
         raise ValueError("input_file_id missing; run upload first for this chunk.")
-    completion_window = str(
-        args.completion_window or metadata.get("completion_window") or "24h"
+    completion_window = validate_completion_window(
+        str(args.completion_window or metadata.get("completion_window") or "24h")
     )
     client = make_client(model_id, models_yaml)
     batch_id = create_batch(client, str(input_file_id), completion_window=completion_window)
@@ -548,6 +593,35 @@ def stage_wait(args: argparse.Namespace, run_dir: Path) -> Any:
     ch["batch_status"] = batch.status
     save_json(meta_path, metadata)
     print(f"wait done, chunk={chunk_i}, final status: {batch.status}")
+    return batch
+
+
+def stage_cancel(args: argparse.Namespace, run_dir: Path) -> Any:
+    meta_path, metadata = load_meta_or_fail(run_dir)
+    chunk_i = _resolve_chunk_index(metadata, args)
+    ch = _mut_chunk(metadata, chunk_i)
+    model_id = str(metadata["model"])
+    models_yaml = _models_yaml_path(args)
+    batch_id = args.batch_id or ch.get("batch_id")
+    if not batch_id:
+        raise ValueError("batch_id missing; run create first or set --batch-id for this chunk")
+
+    client = make_client(model_id, models_yaml)
+    current = client.batches.retrieve(str(batch_id))
+    status = current.status
+    if status in TERMINAL_BATCH_STATES:
+        print(f"batch {batch_id} already terminal, status={status}; no cancel needed")
+        batch = current
+    elif status == "cancelling":
+        print(f"batch {batch_id} already cancelling")
+        batch = current
+    else:
+        batch = cancel_batch(client, str(batch_id))
+
+    ch["batch_id"] = str(batch_id)
+    ch["batch_status"] = batch.status
+    save_json(meta_path, metadata)
+    print(f"cancel done, chunk={chunk_i}, status: {batch.status}")
     return batch
 
 
@@ -660,13 +734,15 @@ def _run_dir_from_arg(run_dir: str) -> Path:
 
 def main() -> None:
     args = parse_args()
+    infer_batch_provider(str(args.model_id))
+    args.completion_window = validate_completion_window(str(args.completion_window))
     step = str(args.step)
     if step == "submit":
         step = "upload"
     elif step == "poll":
         step = "wait"
 
-    if step in {"upload", "create", "wait", "collect"} and not args.run_dir:
+    if step in {"upload", "create", "wait", "collect", "cancel"} and not args.run_dir:
         raise SystemExit(f"--step {step} requires --run-dir")
 
     if step == "prepare":
@@ -683,6 +759,9 @@ def main() -> None:
         return
     if step == "collect":
         stage_collect(args, _run_dir_from_arg(args.run_dir), batch_obj=None)
+        return
+    if step == "cancel":
+        stage_cancel(args, _run_dir_from_arg(args.run_dir))
         return
 
     run_path = stage_prepare(args)

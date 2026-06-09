@@ -25,8 +25,7 @@ pip install -r requirements.txt
 - `src/ifbench_parquet.py`: shared parquet loader used by both online and batch generation.
 - `src/evaluation_lib.py`: strict/loose evaluation and report writing.
 - `src/instructions.py`, `src/instructions_registry.py`, `src/instructions_util.py`: instruction checkers and registry.
-- `batch_api/moonshot/moonshot.py`: batch pipeline for Moonshot/Kimi models.
-- `batch_api/qwen/qwen.py`: batch pipeline for Qwen (DashScope) models.
+- `batch_api/batch.py`: batch pipeline for Moonshot/Kimi and Qwen (DashScope) models.
 
 ### Model configuration (`models.yaml`)
 
@@ -78,36 +77,32 @@ In the paper, we generally report prompt-level loose accuracy.
 
 ### Batch generation (Moonshot / Qwen)
 
-Both batch scripts produce the same generation JSONL format as `run_eval.py`, so you can evaluate with the same evaluation command.
+`batch_api/batch.py` produces the same generation JSONL format as `run_eval.py`, so you can evaluate with the same evaluation command. Provider rules are inferred from `--model-id` (`kimi-*` → Moonshot, `qwen*` → Qwen).
 
-#### Moonshot (Kimi)
 ```
-python batch_api/moonshot/moonshot.py \
+python batch_api/batch.py \
   --model-id kimi-k2.6 \
   --input-parquet data/test-00000-of-00001.parquet \
   --save-to generation/kimi-k2.6/20260429_120000.jsonl \
   --step all
 ```
 
-Defaults:
-- artifacts under `batch_api/moonshot/artifacts/<model>/<timestamp>/`
-- `--max-tasks-per-batch 1000` (Kimi file-size/task-limit friendly)
-
-#### Qwen (DashScope)
 ```
-python batch_api/qwen/qwen.py \
+python batch_api/batch.py \
   --model-id qwen3.6-flash \
   --input-parquet data/test-00000-of-00001.parquet \
   --save-to generation/qwen3.6-flash/20260429_120000.jsonl \
   --step all
 ```
 
-Defaults:
-- artifacts under `batch_api/qwen/artifacts/<model>/<timestamp>/`
-- `--max-tasks-per-batch 5000`
-- `--completion-window` validated in `[24h, 336h]`
+Defaults and provider notes:
+- `--model-id` is required.
+- artifacts under `batch_api/artifacts/<model>/<timestamp>/`
+- `--max-tasks-per-batch` defaults to `1000` (set higher for Qwen if needed, e.g. `5000`)
+- `--completion-window` must be in `[24h, 336h]`
+- Kimi batch requests omit `temperature`, `max_tokens`, and related sampling params
 
-#### Step-by-step mode (both scripts)
+#### Step-by-step mode
 
 You can run stages manually:
 1. `--step prepare` (build `batch_input_cXXX.jsonl`, `meta.json`, and key payload maps)
